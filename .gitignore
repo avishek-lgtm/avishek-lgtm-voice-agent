@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+# Downloaded models (large, fetched by scripts/setup.sh)
+voices/
+models/
+.env
+# Captured leads (personal data, keep out of git)
+data/
+# Google service account keys
+secrets/
