@@ -147,6 +147,13 @@ def create_app(
         c: Config = state["cfg"]
         if state["store"] is None:
             state["store"] = LeadStore(c.database)
+            if c.google_sheets.enabled:
+                from .sheets import SheetsMirror
+
+                mirror = SheetsMirror.connect(c.google_sheets, ROOT)
+                # If the local database was reset, don't reuse references already in the sheet.
+                state["store"].reserve_ids_after(mirror.last_reference_number())
+                state["store"].mirror = mirror
         if state["llm"] is None:
             from .llm import OllamaLLM
 
@@ -162,6 +169,8 @@ def create_app(
             state["tts"] = PiperTTS(c.tts)
         log.info("Voice agent '%s' ready", c.agent.name)
         yield
+        if state["store"].mirror:
+            state["store"].mirror.flush()
         if hasattr(state["llm"], "aclose"):
             await state["llm"].aclose()
 

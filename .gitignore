@@ -9,3 +9,5 @@ models/
 .env
 # Captured leads (personal data, keep out of git)
 data/
+# Google service account keys
+secrets/

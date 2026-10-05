@@ -68,7 +68,9 @@ class SlotTaken(Exception):
 
 
 class LeadStore:
-    def __init__(self, path: str | Path):
+    def __init__(self, path: str | Path, mirror=None):
+        # Optional copy of every lead elsewhere (see sheets.SheetsMirror).
+        self.mirror = mirror
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False)
@@ -79,6 +81,11 @@ class LeadStore:
 
     def save_lead(self, lead_id: int | None, fields: dict, transcript: str) -> int:
         """Create or update a lead and return its id."""
+        lead_id = self._save_lead(lead_id, fields, transcript)
+        self._mirror(lead_id)
+        return lead_id
+
+    def _save_lead(self, lead_id: int | None, fields: dict, transcript: str) -> int:
         values = {k: fields.get(k) or None for k in LEAD_FIELDS + ["notes"]}
         with self.lock, self.db:
             if lead_id is None:
@@ -105,6 +112,11 @@ class LeadStore:
 
     def book(self, lead_id: int, start_iso: str, duration: int, kind: str, max_per_slot: int) -> int:
         """Book a slot for a lead; raises SlotTaken if someone got there first."""
+        appointment_id = self._book(lead_id, start_iso, duration, kind, max_per_slot)
+        self._mirror(lead_id)
+        return appointment_id
+
+    def _book(self, lead_id: int, start_iso: str, duration: int, kind: str, max_per_slot: int) -> int:
         with self.lock, self.db:
             (taken,) = self.db.execute(
                 "SELECT COUNT(*) FROM appointments WHERE start = ? AND status = 'booked'", (start_iso,)
@@ -121,15 +133,33 @@ class LeadStore:
             )
             return cur.lastrowid
 
-    def list_leads(self) -> list[dict]:
+    def reserve_ids_after(self, last_id: int) -> None:
+        """Make new leads number above last_id (e.g. references already in Google Sheets)."""
+        with self.lock, self.db:
+            row = self.db.execute("SELECT seq FROM sqlite_sequence WHERE name = 'leads'").fetchone()
+            if (row["seq"] if row else 0) < last_id:
+                self.db.execute("DELETE FROM sqlite_sequence WHERE name = 'leads'")
+                self.db.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('leads', ?)", (last_id,))
+
+    def _mirror(self, lead_id: int) -> None:
+        if self.mirror:
+            self.mirror.push(self.get_lead(lead_id))
+
+    def get_lead(self, lead_id: int) -> dict:
+        return self.list_leads(lead_id)[0]
+
+    def list_leads(self, lead_id: int | None = None) -> list[dict]:
+        where = "WHERE l.id = ?" if lead_id is not None else ""
         with self.lock:
             rows = self.db.execute(
-                """
+                f"""
                 SELECT l.*, a.start AS appointment_start, a.appointment_type
                 FROM leads l
                 LEFT JOIN appointments a ON a.lead_id = l.id AND a.status = 'booked'
+                {where}
                 ORDER BY l.id DESC
-                """
+                """,
+                () if lead_id is None else (lead_id,),
             ).fetchall()
         out = []
         for r in rows:

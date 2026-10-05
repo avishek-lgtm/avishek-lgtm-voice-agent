@@ -114,3 +114,15 @@ tts:
   voice_path: "voices/en_US-lessac-medium.onnx"
   # >1.0 is slower speech, <1.0 is faster.
   length_scale: 1.0
+
+# Copy every lead and booked site visit into a Google Sheet (free).
+# The local database above is still kept: it decides which slots are free.
+# Setup steps: README, "Save leads to Google Sheets".
+google_sheets:
+  enabled: false
+  # The long id in the sheet's URL: docs.google.com/spreadsheets/d/<THIS PART>/edit
+  spreadsheet_id: ""
+  # Service account key downloaded from Google Cloud. Never commit this file.
+  credentials_file: "secrets/google-service-account.json"
+  # Tab name; created automatically if it doesn't exist.
+  worksheet: "Leads"

@@ -16,7 +16,7 @@ Out of the box the agent is **Riya**, the front desk of a construction company (
 - offers open slots for a **free site visit** from a weekly schedule, reads the details back, and books it once the caller says yes,
 - saves every caller as a **lead** (even if they hang up before booking), with the call transcript.
 
-Leads and booked visits appear at <http://localhost:8000/leads.html>, with a CSV download for Excel or importing into a CRM. Who the agent is, what it knows, which details it collects and when visits can be booked all live in one editable file: [`config/agent.yaml`](config/agent.yaml).
+Leads and booked visits go to a **Google Sheet** (one row per caller, updated live during the call) once you connect one; see [Save leads to Google Sheets](#save-leads-to-google-sheets). They are also always kept locally and shown at <http://localhost:8000/leads.html>, with a CSV download. Who the agent is, what it knows, which details it collects and when visits can be booked all live in one editable file: [`config/agent.yaml`](config/agent.yaml).
 
 ## How a conversation flows
 
@@ -59,6 +59,33 @@ On Windows, run the steps in `scripts/setup.sh` by hand in PowerShell (`python -
 - If two callers pick the same slot, the second is told it was just taken and offered others.
 - The agent tells the caller their reference (e.g. L0007), which matches the leads page.
 
+## Save leads to Google Sheets
+
+Free; it uses a Google Cloud *service account* (a robot Google user) that you share the sheet with. One-time setup, about 10 minutes:
+
+1. Go to <https://console.cloud.google.com/>, create a project (any name, no billing needed).
+2. In **APIs & Services → Library**, search for **Google Sheets API** and click **Enable**.
+3. In **APIs & Services → Credentials**, click **Create credentials → Service account**, give it a name, and finish (no roles needed).
+4. Open the new service account, go to **Keys → Add key → Create new key → JSON**. A `.json` file downloads.
+5. Save that file in this project as `secrets/google-service-account.json` (the `secrets/` folder is git-ignored; never commit or share this file).
+6. Create a Google Sheet for the leads. Click **Share**, paste the service account's email (it looks like `name@project-id.iam.gserviceaccount.com`, shown in the JSON as `client_email`), and give it **Editor** access.
+7. Copy the sheet's id from its URL, `docs.google.com/spreadsheets/d/`**`<this part>`**`/edit`, into `config/agent.yaml`:
+
+   ```yaml
+   google_sheets:
+     enabled: true
+     spreadsheet_id: "1AbC...xyz"
+   ```
+
+8. Restart the server. The log says `Saving leads to Google Sheet ...`, and a **Leads** tab with a header row appears.
+
+How it behaves:
+
+- Each caller gets one row, keyed by their reference (L0001, L0002, ...). The row is created as soon as the agent has their name or phone and is updated as the call goes on, ending with the booked visit time.
+- The local database (`data/leads.db`) is still used to decide which slots are free, so two callers can never book the same slot. That means editing or deleting a visit in the sheet does **not** free the slot for the agent; for now, cancel visits by also telling the agent's operator, or see "What's next".
+- Writes happen in the background. If Google is unreachable, calls carry on, the error is logged, and the lead is still saved locally (and on the leads page); the next change to that lead re-sends it.
+- Keep the sheet's columns in the same order; you can add your own columns to the right (e.g. "Follow-up by", "Outcome") and they're left alone.
+
 ## Make it your own
 
 Everything is in [`config/agent.yaml`](config/agent.yaml); restart the server after editing.
@@ -85,6 +112,7 @@ You can keep several agents side by side: `python -m app.main --config config/an
 | Replies are slow | Each caller turn makes two model calls (detail extraction, then the reply). Use a GPU, or `tiny.en` for Whisper. |
 | Names, phone numbers or emails are misheard | Use `stt.model: small.en`; the agent reads details back before booking so the caller can correct them. |
 | The agent skips steps or forgets details | Use a larger model (`llama3.1:8b`). |
+| `Google credentials not found` / `Cannot open the Google Sheet` | Check the key file path, the `spreadsheet_id`, and that the sheet is shared as Editor with the service account email. |
 | Microphone blocked when opened from another machine | Browsers only allow the mic on `localhost` or HTTPS. |
 
 ## Project layout
@@ -98,6 +126,7 @@ app/
   intake.py    collects caller details, decides the next step, books visits
   schedule.py  open appointment slots from the weekly schedule
   leads.py     SQLite storage for leads and appointments, CSV export
+  sheets.py    copies every lead into Google Sheets
   tts.py       Piper text to speech
   config.py    loads config/agent.yaml
 config/agent.yaml   persona, knowledge and model settings
@@ -118,11 +147,12 @@ The tests swap Whisper, Ollama and Piper for fakes, so they run in seconds witho
 
 ## Privacy
 
-`data/leads.db` contains callers' names, phone numbers and emails. The server listens on `127.0.0.1` only, and the leads page has no login, so don't start it with `--host 0.0.0.0` on a shared network without adding authentication first.
+`data/leads.db` and the Google Sheet contain callers' names, phone numbers and emails; share the sheet only with people who need it. The server listens on `127.0.0.1` only, and the leads page has no login, so don't start it with `--host 0.0.0.0` on a shared network without adding authentication first.
 
 ## What's next
 
-- Push leads and visits into a CRM or ERP (e.g. Odoo CRM leads and calendar events) instead of, or as well as, SQLite.
+- Read cancellations back from the Google Sheet so a cancelled visit frees its slot.
+- Push leads and visits into a CRM or ERP (e.g. Odoo CRM leads and calendar events).
 - Notify the sales team (email or WhatsApp) when a visit is booked.
 - Let callers reschedule or cancel an existing visit by reference number.
 - Phone calls: connect a telephony provider (Twilio, Vonage, or a SIP trunk) when you're ready; that part is pay-per-use.

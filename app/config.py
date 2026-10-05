@@ -9,6 +9,7 @@ from pathlib import Path
 import yaml
 
 from .schedule import BookingConfig
+from .sheets import SheetsConfig
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = ROOT / "config" / "agent.yaml"
@@ -67,6 +68,7 @@ class Config:
     lead: LeadConfig = field(default_factory=LeadConfig)
     booking: BookingConfig = field(default_factory=BookingConfig)
     database: str = str(ROOT / "data" / "leads.db")
+    google_sheets: SheetsConfig = field(default_factory=SheetsConfig)
 
     def full_system_prompt(self) -> str:
         """System prompt with the knowledge base appended."""
@@ -106,4 +108,5 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         lead=LeadConfig(**(raw.get("lead") or {})),
         booking=BookingConfig(**(raw.get("booking") or {})),
         database=database,
+        google_sheets=SheetsConfig(**(raw.get("google_sheets") or {})),
     )
