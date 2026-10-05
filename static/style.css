@@ -27,7 +27,7 @@ body {
   color: var(--text);
   font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-main { max-width: 720px; margin: 0 auto; padding: 24px 16px; }
+main { max-width: 1040px; margin: 0 auto; padding: 24px 16px; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 h1 { font-size: 1.4rem; margin: 0; }
 
@@ -84,3 +84,30 @@ button:disabled { opacity: 0.5; cursor: default; }
   color: var(--text);
 }
 .hint { color: var(--muted); font-size: 0.85rem; }
+
+.nav { margin-top: 4px; font-size: 0.9rem; }
+.nav a { color: var(--accent); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+.layout #transcript { margin: 16px 0; }
+.lead-panel {
+  margin-top: 16px;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.lead-panel h2 { font-size: 1rem; margin: 0 0 8px; }
+.lead-panel dl { margin: 0; font-size: 0.9rem; }
+.lead-panel dt { color: var(--muted); font-size: 0.8rem; margin-top: 8px; }
+.lead-panel dd { margin: 0; overflow-wrap: anywhere; }
+.muted { color: var(--muted); font-size: 0.9rem; }
+.booked { color: #166534; font-weight: 600; }
+@media (prefers-color-scheme: dark) { .booked { color: #4ade80; } }
+@media (max-width: 760px) { .layout { grid-template-columns: 1fr; } }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; background: var(--panel); }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; margin-top: 16px; }
+details summary { cursor: pointer; color: var(--accent); }
+details pre { white-space: pre-wrap; font: inherit; font-size: 0.85rem; max-width: 420px; }

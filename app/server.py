@@ -12,6 +12,7 @@ Protocol on /ws
     {"type": "status", "state": ...}      listening | thinking | speaking
     {"type": "assistant", "text": ...}    one sentence of the reply,
     binary frame                          followed by its WAV audio
+    {"type": "lead", ...}                 caller details captured so far
     {"type": "done"} / {"type": "error", "message": ...}
 """
 
@@ -25,9 +26,12 @@ from contextlib import asynccontextmanager
 from typing import Protocol
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from .config import ROOT, Config, load_config
+from .intake import Intake
+from .leads import LeadStore
 from .llm import clean_for_speech, sentences
 
 log = logging.getLogger(__name__)
@@ -44,14 +48,21 @@ class TTS(Protocol):
 class Conversation:
     """One connected caller: history plus the reply currently being spoken."""
 
-    def __init__(self, ws: WebSocket, cfg: Config, stt: STT, llm, tts: TTS):
-        self.ws, self.cfg, self.stt, self.llm, self.tts = ws, cfg, stt, llm, tts
+    def __init__(self, ws: WebSocket, cfg: Config, stt: STT, llm, tts: TTS, store: LeadStore):
+        self.ws, self.cfg, self.stt, self.llm, self.tts, self.store = ws, cfg, stt, llm, tts, store
         self.history: list[dict] = []
         self.task: asyncio.Task | None = None
+        self.intake = Intake(cfg, store, llm)
 
     def messages(self) -> list[dict]:
         keep = self.cfg.llm.max_history_turns * 2
-        return [{"role": "system", "content": self.cfg.full_system_prompt()}] + self.history[-keep:]
+        system = self.cfg.full_system_prompt() + "\n\n" + self.intake.context()
+        return [{"role": "system", "content": system}] + self.history[-keep:]
+
+    def reset(self) -> None:
+        self.intake.save(self.history)
+        self.history.clear()
+        self.intake = Intake(self.cfg, self.store, self.llm)
 
     async def speak(self, text: str) -> None:
         await self.ws.send_json({"type": "assistant", "text": text})
@@ -68,6 +79,8 @@ class Conversation:
     async def respond(self, user_text: str) -> None:
         self.history.append({"role": "user", "content": user_text})
         await self.ws.send_json({"type": "status", "state": "thinking"})
+        await self.intake.update(self.history)
+        await self.ws.send_json({"type": "lead", **self.intake.snapshot()})
         spoken: list[str] = []
         try:
             async for sentence in sentences(self.llm.stream(self.messages())):
@@ -83,6 +96,7 @@ class Conversation:
             # Keep whatever was actually said, even if the caller interrupted.
             if spoken:
                 self.history.append({"role": "assistant", "content": " ".join(spoken)})
+            self.intake.save(self.history)
 
     async def handle_audio(self, pcm16: bytes) -> None:
         text = await asyncio.to_thread(self.stt.transcribe, pcm16)
@@ -116,15 +130,23 @@ class Conversation:
         self.task = None
 
 
-def create_app(cfg: Config | None = None, stt: STT | None = None, llm=None, tts: TTS | None = None) -> FastAPI:
+def create_app(
+    cfg: Config | None = None,
+    stt: STT | None = None,
+    llm=None,
+    tts: TTS | None = None,
+    store: LeadStore | None = None,
+) -> FastAPI:
     """Build the app. Components can be injected (tests); otherwise real models load at startup."""
-    state: dict = {"cfg": cfg, "stt": stt, "llm": llm, "tts": tts}
+    state: dict = {"cfg": cfg, "stt": stt, "llm": llm, "tts": tts, "store": store}
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if state["cfg"] is None:
             state["cfg"] = load_config()
         c: Config = state["cfg"]
+        if state["store"] is None:
+            state["store"] = LeadStore(c.database)
         if state["llm"] is None:
             from .llm import OllamaLLM
 
@@ -148,7 +170,7 @@ def create_app(cfg: Config | None = None, stt: STT | None = None, llm=None, tts:
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket):
         await ws.accept()
-        conv = Conversation(ws, state["cfg"], state["stt"], state["llm"], state["tts"])
+        conv = Conversation(ws, state["cfg"], state["stt"], state["llm"], state["tts"], state["store"])
         await ws.send_json({"type": "ready", "agent": conv.cfg.agent.name})
         await conv.run_turn(conv.greet())
         try:
@@ -170,12 +192,26 @@ def create_app(cfg: Config | None = None, stt: STT | None = None, llm=None, tts:
                     await ws.send_json({"type": "status", "state": "listening"})
                 elif kind == "reset":
                     await conv.cancel()
-                    conv.history.clear()
+                    conv.reset()
+                    await ws.send_json({"type": "lead", **conv.intake.snapshot()})
                     await ws.send_json({"type": "status", "state": "listening"})
         except WebSocketDisconnect:
             pass
         finally:
             await conv.cancel()
+            conv.intake.save(conv.history)
+
+    @app.get("/api/leads")
+    def list_leads():
+        return state["store"].list_leads()
+
+    @app.get("/api/leads.csv")
+    def leads_csv():
+        return Response(
+            state["store"].to_csv(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="leads.csv"'},
+        )
 
     app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")
     return app

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from .schedule import BookingConfig
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = ROOT / "config" / "agent.yaml"
 
@@ -44,11 +46,27 @@ class TTSConfig:
 
 
 @dataclass
+class LeadConfig:
+    # Details the agent asks for, in order.
+    ask: list[str] = field(
+        default_factory=lambda: [
+            "name", "phone", "email", "project_type", "site_location", "budget_range", "timeline"
+        ]
+    )
+    # Details that must be known before an appointment can be booked.
+    required: list[str] = field(default_factory=lambda: ["name", "phone", "project_type", "site_location"])
+    project_types: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     agent: AgentConfig
     llm: LLMConfig
     stt: STTConfig
     tts: TTSConfig
+    lead: LeadConfig = field(default_factory=LeadConfig)
+    booking: BookingConfig = field(default_factory=BookingConfig)
+    database: str = str(ROOT / "data" / "leads.db")
 
     def full_system_prompt(self) -> str:
         """System prompt with the knowledge base appended."""
@@ -76,9 +94,16 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     if raw.get("knowledge"):
         agent.knowledge = list(raw["knowledge"])
 
+    database = raw.get("database") or "data/leads.db"
+    if not Path(database).is_absolute():
+        database = str(ROOT / database)
+
     return Config(
         agent=agent,
         llm=LLMConfig(**(raw.get("llm") or {})),
         stt=STTConfig(**(raw.get("stt") or {})),
         tts=tts,
+        lead=LeadConfig(**(raw.get("lead") or {})),
+        booking=BookingConfig(**(raw.get("booking") or {})),
+        database=database,
     )

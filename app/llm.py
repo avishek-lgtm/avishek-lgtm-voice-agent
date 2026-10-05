@@ -57,6 +57,20 @@ class OllamaLLM:
                 if chunk.get("done"):
                     break
 
+    async def extract(self, messages: list[dict], schema: dict) -> dict:
+        """Return JSON matching `schema` (Ollama structured output)."""
+        payload = {
+            "model": self.cfg.model,
+            "messages": messages,
+            "stream": False,
+            "format": schema,
+            "options": {"temperature": 0},
+        }
+        resp = await self.client.post("/api/chat", json=payload)
+        resp.raise_for_status()
+        data = json.loads(resp.json()["message"]["content"])
+        return data if isinstance(data, dict) else {}
+
     async def aclose(self) -> None:
         await self.client.aclose()
 

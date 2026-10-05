@@ -6,6 +6,7 @@ import json
 from fastapi.testclient import TestClient
 
 from app.config import load_config
+from app.leads import LeadStore
 from app.llm import clean_for_speech, sentences
 from app.server import create_app
 
@@ -18,6 +19,11 @@ class FakeSTT:
 class FakeLLM:
     def __init__(self):
         self.calls = []
+        self.extracted = []
+
+    async def extract(self, messages, schema):
+        self.extracted.append(messages)
+        return {}
 
     async def stream(self, messages):
         self.calls.append(messages)
@@ -30,9 +36,10 @@ class FakeTTS:
         return b"RIFF" + text.encode()
 
 
-def make_client():
+def make_client(tmp_path):
     llm = FakeLLM()
-    app = create_app(cfg=load_config(), stt=FakeSTT(), llm=llm, tts=FakeTTS())
+    store = LeadStore(tmp_path / "leads.db")
+    app = create_app(cfg=load_config(), stt=FakeSTT(), llm=llm, tts=FakeTTS(), store=store)
     return TestClient(app), llm
 
 
@@ -53,7 +60,7 @@ def test_config_includes_knowledge():
     cfg = load_config()
     prompt = cfg.full_system_prompt()
     assert "Knowledge:" in prompt
-    assert "opening hours" in prompt
+    assert "site visit" in prompt
 
 
 def test_sentence_splitting():
@@ -72,8 +79,8 @@ def test_clean_for_speech():
     assert clean_for_speech("- item one") == "item one"
 
 
-def test_greeting_then_text_turn():
-    client, llm = make_client()
+def test_greeting_then_text_turn(tmp_path):
+    client, llm = make_client(tmp_path)
     with client.websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "ready"
         greeting = receive_until_done(ws)
@@ -81,7 +88,7 @@ def test_greeting_then_text_turn():
 
         ws.send_json({"type": "text", "text": "When are you open?"})
         events = receive_until_done(ws)
-        said = [d["text"] for kind, d in events if kind == "assistant"]
+        said = [d["text"] for kind, d in events if kind == "assistant" and "text" in d]
         assert said == ["We are open nine to six.", "Anything else?"]
         assert sum(kind == "audio" for kind, _ in events) == 2
 
@@ -90,8 +97,8 @@ def test_greeting_then_text_turn():
     assert rest[-1] == {"role": "user", "content": "When are you open?"}
 
 
-def test_audio_turn_is_transcribed():
-    client, _ = make_client()
+def test_audio_turn_is_transcribed(tmp_path):
+    client, _ = make_client(tmp_path)
     with client.websocket_connect("/ws") as ws:
         ws.receive_json()
         receive_until_done(ws)
@@ -130,8 +137,8 @@ def test_ollama_stream_parsing():
     assert asyncio.run(collect()) == ["Hi", " there."]
 
 
-def test_talk_page_is_served():
-    client, _ = make_client()
+def test_talk_page_is_served(tmp_path):
+    client, _ = make_client(tmp_path)
     with client:
         resp = client.get("/")
         assert resp.status_code == 200

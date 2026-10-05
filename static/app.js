@@ -139,12 +139,32 @@ function onServerMessage(event) {
       replyDone = true;
       lastAssistantEl = null;
       break;
+    case "lead":
+      renderLead(msg);
+      break;
     case "error":
       replyDone = true;
       addMessage("system", "Error: " + msg.message);
       setStatus("error", "Error");
       break;
   }
+}
+
+function renderLead(lead) {
+  const dl = $("lead-fields");
+  dl.innerHTML = "";
+  for (const [label, value] of Object.entries(lead.fields)) {
+    const dt = document.createElement("dt");
+    dt.textContent = label[0].toUpperCase() + label.slice(1);
+    const dd = document.createElement("dd");
+    dd.textContent = value || "–";
+    if (!value) dd.className = "muted";
+    dl.append(dt, dd);
+  }
+  const slot = $("lead-slot");
+  slot.textContent = lead.slot ? (lead.booked ? "Booked: " : "Chosen slot: ") + lead.slot : "";
+  slot.className = lead.booked ? "booked" : "muted";
+  $("lead-ref").textContent = lead.reference ? "Reference " + lead.reference : "";
 }
 
 // ---------- Playback ----------
@@ -259,6 +279,8 @@ ui.reset.addEventListener("click", () => {
   resetVad();
   send({ type: "reset" });
   ui.transcript.innerHTML = "";
+  $("lead-fields").innerHTML = '<dd class="muted">Nothing captured yet.</dd>';
+  $("lead-slot").textContent = $("lead-ref").textContent = "";
   addMessage("system", "New conversation started.");
 });
 

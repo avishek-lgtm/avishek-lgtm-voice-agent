@@ -13,8 +13,17 @@
       <h1 id="agent-name">Voice Agent</h1>
       <span id="status" class="status idle">Not connected</span>
     </header>
+    <nav class="nav"><a href="leads.html">Leads and appointments</a></nav>
 
-    <section id="transcript" aria-live="polite"></section>
+    <div class="layout">
+      <section id="transcript" aria-live="polite"></section>
+      <aside id="lead-panel" class="lead-panel">
+        <h2>Caller details</h2>
+        <dl id="lead-fields"><dd class="muted">Nothing captured yet.</dd></dl>
+        <p id="lead-slot" class="muted"></p>
+        <p id="lead-ref" class="muted"></p>
+      </aside>
+    </div>
 
     <section class="controls">
       <button id="call-btn" class="primary">Start talking</button>
