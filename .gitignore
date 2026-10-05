@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+# Downloaded models (large, fetched by scripts/setup.sh)
+voices/
+models/
+.env

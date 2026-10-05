@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Agent</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1 id="agent-name">Voice Agent</h1>
+      <span id="status" class="status idle">Not connected</span>
+    </header>
+
+    <section id="transcript" aria-live="polite"></section>
+
+    <section class="controls">
+      <button id="call-btn" class="primary">Start talking</button>
+      <div class="meter" title="Microphone level"><div id="meter-fill"></div><div id="meter-threshold"></div></div>
+      <label class="inline">Mic sensitivity
+        <input id="sensitivity" type="range" min="1" max="100" value="60">
+      </label>
+      <label class="inline"><input id="barge-in" type="checkbox" checked> Let me interrupt (use headphones)</label>
+      <button id="reset-btn">New conversation</button>
+    </section>
+
+    <form id="text-form" class="text-form">
+      <input id="text-input" type="text" placeholder="Or type a message…" autocomplete="off" disabled>
+      <button type="submit" id="send-btn" disabled>Send</button>
+    </form>
+
+    <p class="hint">Everything runs on this computer: Whisper hears you, Ollama thinks, Piper speaks.</p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

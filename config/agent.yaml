@@ -1,0 +1,61 @@
+# Voice agent configuration.
+# Edit this file to change who the agent is, what it knows, and which local
+# models it uses. Restart the server after changing it.
+
+agent:
+  name: "Ava"
+  company: "Acme Services"
+  # Spoken as soon as someone connects.
+  greeting: "Hi, this is Ava from Acme Services. How can I help you today?"
+  # Persona and behaviour rules. Keep the "spoken" rules: replies are read
+  # aloud, so short plain sentences work far better than lists or markdown.
+  system_prompt: |
+    You are Ava, a friendly and professional customer support assistant for
+    Acme Services. You are speaking with a customer over a voice call.
+
+    Rules:
+    - Answer in one to three short, natural spoken sentences.
+    - Never use lists, bullet points, markdown, emojis or URLs.
+    - Answer only from the knowledge below. If the answer is not there, say
+      you are not sure and offer to pass the question to a human colleague.
+    - If the customer wants a human, a refund decision, or anything you cannot
+      do, collect their name and a phone number or email and say a colleague
+      will follow up.
+    - Never invent prices, dates, order details or policies.
+
+# Facts the agent may use. Replace these with the real business FAQs.
+knowledge:
+  - q: "What are your opening hours?"
+    a: "Monday to Friday, 9 am to 6 pm, and Saturday 10 am to 2 pm. Closed on Sundays and public holidays."
+  - q: "Where are you located?"
+    a: "Our office is at 12 Park Street, Kolkata."
+  - q: "How do I track my order?"
+    a: "Use the tracking link in your confirmation email, or share your order number and a colleague will check it for you."
+  - q: "What is your return policy?"
+    a: "Unused items can be returned within 30 days with the receipt. Refunds are processed within 7 working days."
+  - q: "How can I contact a human?"
+    a: "Email support@acme.example or call during office hours, or leave your details and we will call you back."
+
+# Local model settings. Everything below runs on your own machine for free.
+llm:
+  # Ollama server and model. Pull the model first: `ollama pull llama3.2:3b`
+  base_url: "http://localhost:11434"
+  model: "llama3.2:3b"
+  temperature: 0.4
+  # How many previous user/assistant exchanges to keep in the conversation.
+  max_history_turns: 8
+
+stt:
+  # faster-whisper model: tiny.en, base.en, small.en, medium.en, large-v3 ...
+  # Downloaded automatically on first run. base.en is a good CPU default.
+  model: "base.en"
+  device: "cpu"          # "cuda" if you have an NVIDIA GPU
+  compute_type: "int8"   # "float16" on GPU
+  language: "en"
+
+tts:
+  # Piper voice model (.onnx with its .onnx.json next to it).
+  # scripts/setup.sh downloads the default voice into ./voices
+  voice_path: "voices/en_US-lessac-medium.onnx"
+  # >1.0 is slower speech, <1.0 is faster.
+  length_scale: 1.0
