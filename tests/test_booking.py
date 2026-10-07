@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from datetime import datetime
+from dataclasses import replace
+from datetime import date, datetime
 
 from fastapi.testclient import TestClient
 
@@ -55,6 +56,14 @@ def test_slots_follow_schedule():
     assert all(s.hour != 13 for s in starts if s.weekday() < 5)  # weekday lunch break
     sat = [s for s in starts if s.weekday() == 5]
     assert sat and max(s.hour for s in sat) == 13  # last Saturday slot 13:00-14:00
+
+
+def test_closed_dates_are_skipped():
+    # Close Tuesday 6 October, which would otherwise hold the first slot
+    cfg = replace(CFG.booking, closed_dates=["2026-10-06"])
+    starts = all_slots(cfg, NOW)
+    assert all(s.date() != date(2026, 10, 6) for s in starts)
+    assert starts[0] == datetime(2026, 10, 7, 10, 0, tzinfo=TZ)
 
 
 def test_booked_slot_not_offered():
