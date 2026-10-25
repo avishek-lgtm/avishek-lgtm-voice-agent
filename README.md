@@ -56,6 +56,8 @@ On Windows, run the steps in `scripts/setup.sh` by hand in PowerShell (`python -
 
 - Open slots come from `booking.weekly_hours` in the config (with lunch breaks, closed days and `closed_dates`), minus visits already booked, at least `min_notice_hours` ahead. The agent only ever offers times from that list.
 - The booking is written by the code, not the model. It happens only after the agent has read the details back and the caller agreed, and only if name, phone, project type and site location are known (`lead.required`). If the caller corrects anything during the read-back, the agent reads back again.
+- The agent can't claim a visit is booked before the code has booked it, or promise an email or text (it can't send any). Every spoken sentence is checked first; an untrue one is replaced with "the visit is not booked yet" and the agent asks the caller to confirm again.
+- A phone number is only saved if the caller actually said those digits, and it needs at least 10 digits; an email only if the caller spelled it out. Small models otherwise fill in digits Whisper missed or invent a plausible address. A number the caller repeats replaces a misheard one, and the agent is told to read the number back digit by digit before booking.
 - If two callers pick the same slot, the second is told it was just taken and offered others.
 - The agent tells the caller their reference (e.g. L0007), which matches the leads page.
 
