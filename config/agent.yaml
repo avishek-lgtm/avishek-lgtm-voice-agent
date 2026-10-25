@@ -1,0 +1,128 @@
+# Voice agent configuration.
+# Edit this file to change who the agent is, what it knows, how it books
+# appointments and which local models it uses. Restart the server after
+# changing it.
+#
+# Everything about "BuildRight Constructions" below is PLACEHOLDER text.
+# Replace it with the real company's details before showing it to anyone.
+
+agent:
+  name: "Riya"
+  company: "BuildRight Constructions"
+  # Spoken as soon as someone connects.
+  greeting: "Hello, thank you for calling BuildRight Constructions. This is Riya. Are you planning a new construction or renovation project?"
+  # Persona and behaviour rules. Replies are read aloud, so short plain
+  # sentences work far better than lists or markdown.
+  system_prompt: |
+    You are Riya, a warm and professional front-desk assistant for
+    BuildRight Constructions, a construction company. You are speaking with
+    a caller over a voice call.
+
+    Your goals, in order:
+    1. Understand the caller's project and answer their questions from the knowledge below.
+    2. Collect their details so the sales team can follow up.
+    3. Book a free site visit at a time that suits them.
+
+    Rules:
+    - Speak in one to three short, natural sentences per reply.
+    - Ask for only one detail at a time, and follow the "Your next step" instruction in the call progress section.
+    - Never use lists, bullet points, markdown, emojis or URLs.
+    - Never quote prices, costs per square foot, or completion dates. Say the
+      engineer will give an estimate after the site visit.
+    - Answer only from the knowledge below. If you are not sure, say a
+      colleague will cover it during the visit.
+    - When repeating a phone number, read it in small groups of digits.
+
+# Facts the agent may use. Replace these with the real company's FAQs.
+knowledge:
+  - q: "What services do you offer?"
+    a: "New house and villa construction, apartment and commercial buildings, renovation and extensions, interiors, and turnkey design and build."
+  - q: "Which areas do you work in?"
+    a: "Kolkata, Howrah, Salt Lake, New Town and nearby areas within about 50 kilometres."
+  - q: "How does the process work?"
+    a: "We start with a free site visit by an engineer, then share a design proposal and a detailed estimate. Work begins after the agreement is signed."
+  - q: "Is the site visit free?"
+    a: "Yes, the first site visit and consultation are free and there is no obligation."
+  - q: "What should I keep ready for the site visit?"
+    a: "Any plot documents, approved plans if you have them, and a rough idea of your budget and timeline."
+  - q: "Do you help with approvals and permits?"
+    a: "Yes, we can guide you through building plan approval with the local municipality."
+  - q: "What are your office hours?"
+    a: "Monday to Saturday, 10 am to 6 pm."
+
+# Caller details to collect. Keys can be: name, phone, email, project_type,
+# site_location, budget_range, timeline.
+lead:
+  # Asked in this order. Callers can decline the optional ones.
+  ask: [name, phone, project_type, site_location, budget_range, timeline, email]
+  # Must be known before a site visit can be booked.
+  required: [name, phone, project_type, site_location]
+  # Labels the agent maps a caller's project to.
+  project_types:
+    - new house construction
+    - apartment or building construction
+    - commercial construction
+    - renovation or extension
+    - interiors
+    - other
+
+# Appointment booking against the schedule below; bookings are stored locally.
+booking:
+  enabled: true
+  appointment_type: "free site visit"
+  timezone: "Asia/Kolkata"
+  duration_minutes: 60
+  days_ahead: 14          # how far ahead callers can book
+  min_notice_hours: 24    # no bookings sooner than this
+  slots_to_offer: 8       # how many open slots the agent knows about at once
+  max_per_slot: 1         # how many visits can share the same start time
+  weekly_hours:           # 24-hour clock; leave a day empty when closed
+    mon: ["10:00-13:00", "14:00-18:00"]
+    tue: ["10:00-13:00", "14:00-18:00"]
+    wed: ["10:00-13:00", "14:00-18:00"]
+    thu: ["10:00-13:00", "14:00-18:00"]
+    fri: ["10:00-13:00", "14:00-18:00"]
+    sat: ["10:00-14:00"]
+    sun: []
+  closed_dates: []        # e.g. ["2026-10-20", "2026-11-01"]
+
+# Where leads and appointments are saved (SQLite file, created automatically).
+database: "data/leads.db"
+
+# Local model settings. Everything below runs on your own machine for free.
+llm:
+  # Ollama server and model. Pull the model first: `ollama pull llama3.2:3b`
+  # llama3.1:8b follows the booking flow more reliably if your machine can run it.
+  base_url: "http://localhost:11434"
+  model: "llama3.2:3b"
+  temperature: 0.4
+  # How many previous user/assistant exchanges to keep in the conversation.
+  max_history_turns: 8
+
+stt:
+  # faster-whisper model: tiny.en, base.en, small.en, medium.en, large-v3 ...
+  # Downloaded automatically on first run. small.en hears names, numbers and
+  # emails noticeably better than base.en if your CPU keeps up.
+  model: "base.en"
+  device: "cpu"          # "cuda" if you have an NVIDIA GPU
+  compute_type: "int8"   # "float16" on GPU
+  language: "en"
+
+tts:
+  # Piper voice model (.onnx with its .onnx.json next to it).
+  # scripts/setup.sh downloads the default voice into ./voices
+  voice_path: "voices/en_US-lessac-medium.onnx"
+  # >1.0 is slower speech, <1.0 is faster.
+  length_scale: 1.0
+
+# Copy every lead and booked site visit into a Google Sheet (free).
+# The local database above is still kept: it decides which slots are free.
+# Setup steps: README, "Save leads to Google Sheets".
+google_sheets:
+  enabled: false
+  # The long id in the sheet's URL: docs.google.com/spreadsheets/d/<THIS PART>/edit
+  spreadsheet_id: ""
+  # Service account key downloaded from Google Cloud. Never commit this file.
+  credentials_file: "secrets/google-service-account.json"
+  # Tab name; created automatically if it doesn't exist.
+  worksheet: "Leads"

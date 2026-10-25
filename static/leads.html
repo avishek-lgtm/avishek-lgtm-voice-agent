@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leads</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Leads and appointments</h1>
+      <a href="api/leads.csv"><button>Download CSV</button></a>
+    </header>
+    <nav class="nav"><a href="./">Back to the voice agent</a> · <span id="count" class="muted"></span></nav>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Ref</th><th>Received</th><th>Status</th><th>Name</th><th>Phone</th><th>Email</th>
+            <th>Project</th><th>Site</th><th>Budget</th><th>Timeline</th><th>Site visit</th><th>Call</th>
+          </tr>
+        </thead>
+        <tbody id="rows"><tr><td colspan="12" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="hint">Refreshes every 10 seconds. Leads are saved in data/leads.db on this computer.</p>
+  </main>
+  <script>
+    const fmt = (iso) => iso ? new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "";
+    // Visit times are shown in the company's time zone, as stored (e.g. 2026-10-07T10:00+05:30).
+    const fmtVisit = (iso) => {
+      if (!iso) return "";
+      const [d, t] = iso.slice(0, 16).split("T");
+      const day = new Date(d + "T00:00:00Z");
+      return day.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", timeZone: "UTC" }) + ", " + t;
+    };
+    const cell = (text) => { const td = document.createElement("td"); td.textContent = text || ""; return td; };
+
+    async function load() {
+      const leads = await (await fetch("api/leads")).json();
+      const rows = document.getElementById("rows");
+      rows.innerHTML = "";
+      if (!leads.length) rows.innerHTML = '<tr><td colspan="12" class="muted">No leads yet.</td></tr>';
+      for (const l of leads) {
+        const tr = document.createElement("tr");
+        tr.append(
+          cell(l.reference), cell(fmt(l.created_at)),
+          cell(l.status === "appointment_booked" ? "Visit booked" : "New"),
+          cell(l.name), cell(l.phone), cell(l.email), cell(l.project_type), cell(l.site_location),
+          cell(l.budget_range), cell(l.timeline), cell(fmtVisit(l.appointment_start)),
+        );
+        const call = document.createElement("td");
+        if (l.transcript) {
+          const d = document.createElement("details");
+          d.innerHTML = "<summary>Transcript</summary><pre></pre>";
+          d.querySelector("pre").textContent = (l.notes ? "Notes: " + l.notes + "\n\n" : "") + l.transcript;
+          call.append(d);
+        }
+        tr.append(call);
+        rows.append(tr);
+      }
+      document.getElementById("count").textContent =
+        leads.length + " leads, " + leads.filter((l) => l.appointment_start).length + " site visits booked";
+    }
+    load();
+    setInterval(() => { if (!document.querySelector("details[open]")) load(); }, 10000);
+  </script>
+</body>
+</html>
