@@ -3,9 +3,11 @@
 Each caller turn runs in two steps:
 1. Extraction: the local model reads the recent conversation and returns the
    caller's details as JSON (Ollama structured output, temperature 0).
-2. The code merges those details, decides the next step (ask for a missing
-   detail, offer slots, read back and confirm, or book) and hands that step to
-   the conversational model as part of its system prompt.
+2. The code merges those details and decides the next step: ask for a missing
+   detail, offer slots, read back and confirm, or book. The code writes that
+   line itself (`next_line`), so a small model can't skip a question, ask out
+   of order or read back a wrong number. The conversational model only
+   acknowledges the caller and answers their questions, just before it.
 
 Booking itself is done by code, never by the model: a slot is only booked
 after the agent has read the details back and the caller has said yes, and
@@ -45,6 +47,22 @@ MESSAGE_PROMISE = re.compile(
     r"|\bconfirmation\s+(?:email|e-mail|sms|text|message)\b",
     re.IGNORECASE,
 )
+# What the agent says to ask for each detail.
+ASK = {
+    "name": "May I have your full name, please?",
+    "phone": "Could I have your phone number? Please say it slowly, digit by digit.",
+    "email": "And your email address? You can say skip if you'd rather not share it.",
+    "project_type": "What kind of project is it, for example a new house, a renovation or interiors?",
+    "site_location": "Where is the construction site?",
+    "budget_range": "Do you have a rough budget in mind? It's fine to say you're not sure yet.",
+    "timeline": "When would you like to start?",
+}
+# The conversational model's job while the code asks the questions.
+SUPPORTING_ROLE = (
+    "If the caller asked a question, answer it in one or two short sentences from the knowledge. "
+    "Otherwise acknowledge what they said in a few words. Do not ask the caller anything: "
+    "the system speaks the next line right after you."
+)
 DIGIT_WORDS = {
     "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
     "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
@@ -75,6 +93,14 @@ class Intake:
         self.booked_ref: str | None = None
         self.slot_lost = False
         self._corrected = False  # already corrected a false promise this turn
+        self._announced = False  # booking confirmation already spoken
+        self._last_asked: str | None = None
+        self.instruction = SUPPORTING_ROLE
+        # Spoken by the code after the model's reply; "" when the model leads.
+        self.next_line = ""
+        # False when the code's line must stand alone (a re-ask, the read-back, the
+        # booking confirmation): the model's chatter there contradicts or pre-empts it.
+        self.lead_in = True
 
     # ---------- state ----------
 
@@ -98,8 +124,12 @@ class Intake:
     async def update(self, history: list[dict]) -> None:
         """Read the latest caller turn and advance the booking."""
         self._corrected = False
-        if self.booked_ref:
-            return
+        if not self.booked_ref:
+            await self._advance(history)
+        self.lead_in = True
+        self.instruction, self.next_line = self._plan()
+
+    async def _advance(self, history: list[dict]) -> None:
         self.slot_lost = False
         self.refresh_slots()
         try:
@@ -123,6 +153,8 @@ class Intake:
         changed = False
         for f in LEAD_FIELDS + ["notes"]:
             value = _clean(f, data.get(f))
+            if value == NOT_PROVIDED and f != self._last_asked:
+                continue  # models mark unasked details "not provided"; only a refusal counts
             if f == "phone":
                 value = self._phone(value, history)
             elif f == "email" and _real(value) and not _caller_said_email(value, history):
@@ -234,7 +266,7 @@ Appointment slots offered:
             parts += [f"Open slots for a {b.appointment_type} (only offer these, never invent times):", slots]
             if self.slot:
                 parts.append(f"Caller's chosen slot: {self.slot.spoken()}")
-        parts.append("Your next step: " + self._next_step())
+        parts.append("Your next step: " + self.instruction)
         parts.append("Never tell the caller the appointment is booked unless this section says it is booked.")
         return "\n".join(parts)
 
@@ -255,37 +287,53 @@ Appointment slots offered:
         if not claim:
             ref = f"Your reference number is {_spell(self.booked_ref)}. " if self.booked_ref else ""
             return ref + "A colleague will call you to confirm the details."
-        if self.slot and not self.missing_required():
-            return "Just to be clear, the visit is not booked yet. Could you please confirm the details, so I can book it?"
         return "Just to be clear, the visit is not booked yet."
 
-    def _next_step(self) -> str:
+    def _plan(self) -> tuple[str, str]:
+        """The model's instruction for this turn, and the line the code speaks after it."""
         b = self.cfg.booking
         self.awaiting_confirmation = False
+        asked, self._last_asked = self._last_asked, None
         if self.booked_ref:
-            return (
-                f"The {b.appointment_type} is BOOKED for {self.slot.spoken()}, reference {_spell(self.booked_ref)}. "
-                "Tell the caller, say a colleague will call to confirm before the visit, and ask if there is anything else."
+            if self._announced:
+                return (
+                    f"The {b.appointment_type} is BOOKED for {self.slot.spoken()}, reference "
+                    f"{_spell(self.booked_ref)}. Answer any further questions briefly.",
+                    "",
+                )
+            self._announced = True
+            self.lead_in = False
+            return SUPPORTING_ROLE, (
+                f"Your {b.appointment_type} is booked for {self.slot.spoken()}. "
+                f"Your reference number is {_spell(self.booked_ref)}. "
+                "A colleague will call you to confirm before the visit. Is there anything else I can help you with?"
             )
-        prefix = ""
-        if self.slot_lost:
-            prefix = "The slot the caller wanted was just taken by someone else; apologise briefly. "
+        sorry = "Sorry, that time was just taken. " if self.slot_lost else ""
         missing = self.missing()
         if missing:
-            return (
-                prefix + "If the caller asked a question, answer it first. Then ask for their "
-                f"{FIELD_LABELS[missing[0]]}. Ask for one detail at a time."
+            field = self._last_asked = missing[0]
+            again = ""
+            if field == "phone" and asked == "phone":
+                again, self.lead_in = "Sorry, I didn't catch the full number. ", False
+            return SUPPORTING_ROLE, sorry + again + ASK[field]
+        declined = self.missing_required()
+        if declined:  # the caller said no to a detail the booking needs
+            field = self._last_asked = declined[0]
+            return SUPPORTING_ROLE, f"I'll need your {FIELD_LABELS[field]} to book the visit. " + ASK[field]
+        if not b.enabled or not self.offered:
+            return SUPPORTING_ROLE, (
+                "Thank you. A colleague will call you soon to arrange the visit. Is there anything else I can help you with?"
             )
-        if not b.enabled:
-            return "Thank the caller, tell them a colleague will contact them soon, and ask if there is anything else."
-        if not self.offered:
-            return "There are no open slots. Tell the caller a colleague will call them to arrange a visit."
         if not self.slot:
-            return prefix + f"Offer two or three of the open slots for a {b.appointment_type} and ask which suits them."
-        self.awaiting_confirmation = True
-        return (
-            "Briefly read back the caller's name, phone number (digit by digit), project type, site location "
-            "and the chosen slot, then ask them to confirm so you can book it."
+            times = [s.spoken() for s in self.offered[:3]]
+            choices = ", ".join(times[:-1]) + " or " + times[-1] if len(times) > 1 else times[0]
+            return SUPPORTING_ROLE, f"{sorry}I can offer a {b.appointment_type} on {choices}. Which suits you best?"
+        self.awaiting_confirmation, self.lead_in = True, False
+        f = self.fields
+        return SUPPORTING_ROLE, (
+            f"Let me read that back. {f['name']}, phone {_spell_phone(f['phone'])}. "
+            f"{f['project_type'].capitalize()} at {f['site_location']}. "
+            f"{b.appointment_type.capitalize()} on {self.slot.spoken()}. Shall I book it?"
         )
 
     def snapshot(self) -> dict:
@@ -364,6 +412,16 @@ def _same(a: str, b: str) -> bool:
 def _spell(ref: str) -> str:
     """'L0007' -> 'L 0 0 0 7' so TTS reads it character by character."""
     return " ".join(ref)
+
+
+def _spell_phone(phone: str) -> str:
+    """'+919830012345' -> 'plus 9 1, 9 8 3 0 0, 1 2 3 4 5' so TTS reads each digit."""
+    digits = re.sub(r"\D", "", phone)
+    country, local = digits[:-MIN_PHONE_DIGITS], digits[-MIN_PHONE_DIGITS:]
+    groups = [local[:5], local[5:]]
+    if country:
+        groups.insert(0, ("plus " if phone.startswith("+") else "") + " ".join(country))
+    return ", ".join(" ".join(g) if g.isdigit() else g for g in groups)
 
 
 def _transcript(history: list[dict]) -> str:

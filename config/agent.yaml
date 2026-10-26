@@ -107,6 +107,9 @@ stt:
   device: "cpu"          # "cuda" if you have an NVIDIA GPU
   compute_type: "int8"   # "float16" on GPU
   language: "en"
+  # Names and places Whisper should expect; it mishears unfamiliar ones
+  # ("Colorado" for Kolkata). List the company name and your service areas.
+  hints: "BuildRight Constructions. Kolkata, New Town, Salt Lake, Howrah, Rajarhat. Lakh, crore, Diwali."
 
 tts:
   # Piper voice model (.onnx with its .onnx.json next to it).

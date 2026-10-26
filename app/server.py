@@ -36,6 +36,8 @@ from .llm import clean_for_speech, sentences
 
 log = logging.getLogger(__name__)
 
+MAX_LEAD_IN = 2  # model sentences before the code's own line
+
 
 class STT(Protocol):
     def transcribe(self, pcm16: bytes) -> str: ...
@@ -81,16 +83,26 @@ class Conversation:
         await self.ws.send_json({"type": "status", "state": "thinking"})
         await self.intake.update(self.history)
         await self.ws.send_json({"type": "lead", **self.intake.snapshot()})
+        # When the code has the next line, the model only gets a short lead-in
+        # and may not ask anything itself (it would skip or reorder the questions).
+        line = self.intake.next_line
         spoken: list[str] = []
+
+        async def say(sentence: str) -> None:
+            if not spoken:
+                await self.ws.send_json({"type": "status", "state": "speaking"})
+            spoken.append(sentence)
+            await self.speak(sentence)
+
         try:
-            async for sentence in sentences(self.llm.stream(self.messages())):
+            replies = sentences(self.llm.stream(self.messages())) if self.intake.lead_in or not line else _nothing()
+            async for sentence in replies:
                 sentence = self.intake.screen(clean_for_speech(sentence) or "")
-                if not sentence:
+                if not sentence or (line and (sentence.endswith("?") or len(spoken) >= MAX_LEAD_IN)):
                     continue
-                if not spoken:
-                    await self.ws.send_json({"type": "status", "state": "speaking"})
-                spoken.append(sentence)
-                await self.speak(sentence)
+                await say(sentence)
+            if line:
+                await say(line)
             await self.ws.send_json({"type": "done"})
         finally:
             # Keep whatever was actually said, even if the caller interrupted.
@@ -224,6 +236,11 @@ def create_app(
 
     app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")
     return app
+
+
+async def _nothing():
+    return
+    yield
 
 
 def _parse_json(text: str | None) -> dict:

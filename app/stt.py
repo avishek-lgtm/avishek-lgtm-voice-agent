@@ -32,5 +32,6 @@ class WhisperSTT:
             beam_size=1,
             vad_filter=True,
             condition_on_previous_text=False,
+            initial_prompt=self.cfg.hints or None,
         )
         return " ".join(s.text.strip() for s in segments).strip()
