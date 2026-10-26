@@ -38,6 +38,8 @@ class STTConfig:
     device: str = "cpu"
     compute_type: str = "int8"
     language: str | None = "en"
+    # Words Whisper should expect (company, local place names), e.g. "Kolkata, New Town".
+    hints: str = ""
 
 
 @dataclass

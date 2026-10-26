@@ -10,8 +10,9 @@ import httpx
 
 from .config import LLMConfig
 
-# A sentence ends at . ! or ? followed by whitespace (or a newline anywhere).
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
+# A sentence ends at . ! or ? followed by whitespace (or a newline anywhere),
+# but not after a title, so "Mr. Kumar" is spoken without a pause.
+_SENTENCE_END = re.compile(r"(?<=[.!?])(?<!\bMr\.)(?<!\bMrs\.)(?<!\bMs\.)(?<!\bDr\.)\s+|\n+")
 
 
 class OllamaLLM:

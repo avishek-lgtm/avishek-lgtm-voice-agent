@@ -8,7 +8,7 @@ from datetime import date, datetime
 from fastapi.testclient import TestClient
 
 from app.config import load_config
-from app.intake import Intake
+from app.intake import ASK, Intake
 from app.leads import LeadStore
 from app.schedule import all_slots, available_slots
 from app.server import create_app
@@ -91,15 +91,28 @@ def test_books_only_after_read_back_and_yes(tmp_path):
     run(intake.update(history))
     assert intake.fields["email"] == "ravi.k@gmail.com"
     assert intake.fields["phone"] == "9830012345"
-    assert "Offer two or three" in intake.context()
+    assert intake.next_line.startswith("I can offer a free site visit on Tuesday 6 October at 10 am")
+    assert intake.next_line.endswith("Which suits you best?")
+    assert intake.lead_in  # the model may answer a question before the offer
 
     run(intake.update(history))
     assert intake.slot.id == "S2" and not intake.booked_ref
-    assert "read back" in intake.context()  # agent now reads back and asks to confirm
+    # The code reads the details back itself, the phone digit by digit.
+    assert intake.next_line == (
+        "Let me read that back. Ravi Kumar, phone 9 8 3 0 0, 1 2 3 4 5. "
+        "New house construction at New Town, Kolkata. "
+        f"Free site visit on {intake.slot.spoken()}. Shall I book it?"
+    )
+    assert not intake.lead_in  # the read-back stands alone
 
     run(intake.update(history))
     assert intake.booked_ref == "L0001"
-    assert "BOOKED" in intake.context()
+    assert intake.next_line.startswith(f"Your free site visit is booked for {intake.slot.spoken()}.")
+    assert "reference number is L 0 0 0 1" in intake.next_line
+    assert not intake.lead_in
+
+    run(intake.update(history))  # announced once; after that the model answers freely
+    assert intake.next_line == "" and "BOOKED" in intake.context()
 
     [lead] = store.list_leads()
     assert lead["status"] == "appointment_booked"
@@ -137,7 +150,7 @@ def test_slot_taken_by_another_caller(tmp_path):
     b.llm.extractions = [{"confirmed": True}]
     run(b.update(CALL))  # B's slot is gone now
     assert not b.booked_ref and b.slot is None
-    assert "just taken" in b.context()
+    assert b.next_line.startswith("Sorry, that time was just taken. I can offer")
 
 
 def test_partial_lead_saved_without_booking(tmp_path):
@@ -147,7 +160,21 @@ def test_partial_lead_saved_without_booking(tmp_path):
     [lead] = store.list_leads()
     assert lead["name"] == "Meera" and lead["status"] == "new"
     assert "Caller: I'm Meera" in lead["transcript"]
-    assert "phone number" in intake.context()  # still asks for the next missing detail
+    # The model said "not provided" for a phone nobody asked for yet: ignored, so Riya asks.
+    assert intake.next_line == ASK["phone"]
+
+    # Asked and refused: move on to the next detail.
+    intake.llm.extractions = [{"phone": "not provided"}]
+    run(intake.update([{"role": "user", "content": "I'd rather not give my number"}]))
+    assert intake.fields["phone"] == "not provided"
+    assert intake.next_line == ASK["project_type"]
+
+    # Everything else given, phone still refused: ask again, saying why, instead of offering slots.
+    intake.llm.extractions = [{**DETAILS, "phone": "", "email": ""}, {"email": "not provided"}]
+    run(intake.update([{"role": "user", "content": "A new house in New Town, 50 to 60 lakh, after Diwali"}]))
+    assert intake.next_line == ASK["email"]
+    run(intake.update([{"role": "user", "content": "skip"}]))
+    assert intake.next_line == "I'll need your phone number to book the visit. " + ASK["phone"]
 
 
 def test_extraction_failure_does_not_break_call(tmp_path):
@@ -157,7 +184,7 @@ def test_extraction_failure_does_not_break_call(tmp_path):
 
     intake = Intake(CFG, LeadStore(tmp_path / "leads.db"), Broken([]), now=lambda: NOW)
     run(intake.update([]))
-    assert "full name" in intake.context()
+    assert intake.next_line == "May I have your full name, please?"
 
 
 def test_call_over_websocket_creates_lead(tmp_path):
@@ -207,7 +234,7 @@ def test_phone_kept_only_if_caller_said_it(tmp_path):
     intake = Intake(CFG, store, ScriptedLLM([{**DETAILS, "phone": "+93123345690"}]), now=lambda: NOW)
     run(intake.update(heard))
     assert intake.fields["phone"] == ""
-    assert "phone number" in intake.context()  # asks again instead of saving a wrong number
+    assert "phone number" in intake.next_line  # asks again instead of saving a wrong number
 
     # Too short to be a full number, even though the caller said it.
     intake.llm.extractions = [{**DETAILS, "phone": "98312345"}]
@@ -251,7 +278,8 @@ def test_false_booking_claims_are_never_spoken(tmp_path):
     assert intake.screen("I've confirmed your phone number.") == "I've confirmed your phone number."
 
     # Once the code has booked it, saying so is allowed, but promising an email never is.
-    intake.booked_ref = "L0001"
+    intake.refresh_slots()
+    intake.booked_ref, intake.slot = "L0001", intake.offered[0]
     run(intake.update([]))
     assert intake.screen("Your visit is booked for Tuesday at 10 am.") == "Your visit is booked for Tuesday at 10 am."
     assert intake.screen("We'll send you a reference number, L0001.") == (
@@ -289,7 +317,8 @@ def test_untrue_booking_is_not_spoken_over_websocket(tmp_path):
                 break
     assert spoken[0] == "Thank you, Ravi."
     assert "not booked yet" in spoken[1]
-    assert len(spoken) == 2  # the email promise was dropped
+    # The email promise was dropped; then the code asks for the phone the caller never gave.
+    assert spoken[2:] == ["Could I have your phone number? Please say it slowly, digit by digit."]
     assert not store.list_leads() or store.list_leads()[0]["appointment_start"] is None
 
 

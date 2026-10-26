@@ -74,6 +74,45 @@ def test_sentence_splitting():
     assert asyncio.run(collect()) == ["Hello there.", "How are you?", "I am fine"]
 
 
+def test_titles_do_not_end_a_sentence():
+    async def tokens():
+        yield "Nice to meet you, Mr. Kumar. Dr. Rao will visit."
+
+    async def collect():
+        return [s async for s in sentences(tokens())]
+
+    assert asyncio.run(collect()) == ["Nice to meet you, Mr. Kumar.", "Dr. Rao will visit."]
+
+
+def test_whisper_gets_place_name_hints():
+    from app.stt import WhisperSTT
+
+    class Model:
+        def transcribe(self, audio, **kwargs):
+            self.kwargs = kwargs
+            return [], None
+
+    stt = WhisperSTT.__new__(WhisperSTT)
+    stt.cfg, stt.model = load_config().stt, Model()
+    stt.transcribe(b"\x00\x01" * 8000)
+    assert "Kolkata" in stt.model.kwargs["initial_prompt"]
+
+
+def test_model_lead_in_is_short_when_the_code_speaks_next(tmp_path):
+    class Chatty(FakeLLM):
+        async def stream(self, messages):
+            for tok in ["Great. ", "We love new homes. ", "Kolkata is lovely. ", "What is your budget? "]:
+                yield tok
+
+    app = create_app(cfg=load_config(), stt=FakeSTT(), llm=Chatty(), tts=FakeTTS(), store=LeadStore(tmp_path / "l.db"))
+    with TestClient(app).websocket_connect("/ws") as ws:
+        ws.receive_json()
+        receive_until_done(ws)
+        ws.send_json({"type": "text", "text": "I want to build a house"})
+        said = [d["text"] for kind, d in receive_until_done(ws) if kind == "assistant"]
+    assert said == ["Great.", "We love new homes.", "May I have your full name, please?"]
+
+
 def test_clean_for_speech():
     assert clean_for_speech("**Bold** and [link](http://x.y)") == "Bold and link"
     assert clean_for_speech("- item one") == "item one"
@@ -89,7 +128,8 @@ def test_greeting_then_text_turn(tmp_path):
         ws.send_json({"type": "text", "text": "When are you open?"})
         events = receive_until_done(ws)
         said = [d["text"] for kind, d in events if kind == "assistant" and "text" in d]
-        assert said == ["We are open nine to six.", "Anything else?"]
+        # The model answers; its own question is dropped and the code asks for the next detail.
+        assert said == ["We are open nine to six.", "May I have your full name, please?"]
         assert sum(kind == "audio" for kind, _ in events) == 2
 
     system, *rest = llm.calls[0]

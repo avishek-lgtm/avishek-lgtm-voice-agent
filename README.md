@@ -23,7 +23,7 @@ Leads and booked visits go to a **Google Sheet** (one row per caller, updated li
 1. The page listens to your microphone and detects when you start and stop speaking.
 2. When you pause, the audio goes to the server and Whisper turns it into text.
 3. The local model reads the conversation and pulls out the caller's details as structured data. The code merges them, saves the lead, and decides the next step: ask for a missing detail, offer slots, read back and confirm, or book.
-4. The persona, knowledge and that next step go to the local Llama model, which writes the spoken reply.
+4. The local Llama model answers the caller's question or acknowledges their answer in a sentence or two, using the persona and knowledge. Then the code speaks the next step itself: the question for the next detail, the open slots, the read-back (phone digit by digit) or the booking confirmation with its reference. A small model can't skip a question, ask out of order or read back a wrong number.
 5. The reply streams back sentence by sentence; each sentence is spoken by Piper as soon as it is ready, so the agent starts talking before the whole answer is written.
 6. You can talk over the agent to interrupt it (wear headphones so it doesn't hear itself), or type instead of speaking.
 
@@ -97,7 +97,8 @@ Everything is in [`config/agent.yaml`](config/agent.yaml); restart the server af
 - **What it collects:** `lead.ask` (order of questions), `lead.required` (needed to book) and `lead.project_types`.
 - **When visits can be booked:** the `booking` section (hours per weekday, visit length, notice period, closed dates, visits per slot, time zone). Set `booking.enabled: false` to only capture leads.
 - **Smarter or faster brain:** `llm.model`. Any Ollama model works, e.g. `llama3.1:8b` for better answers if you have the RAM (run `ollama pull <model>` first).
-- **Better hearing:** `stt.model` (`small.en` is more accurate, `tiny.en` is faster). Set `device: cuda` and `compute_type: float16` on an NVIDIA GPU.
+- **Better hearing:** `stt.model` (`small.en` is more accurate, `tiny.en` is faster). Set `device: cuda` and `compute_type: float16` on an NVIDIA GPU. Put your company name and service areas in `stt.hints` so Whisper expects them.
+- **What the agent asks and how:** the questions are in `ASK` and the read-back and slot lines in `Intake._plan` (`app/intake.py`).
 - **Different voice:** pick one from the [Piper voice list](https://huggingface.co/rhasspy/piper-voices/tree/main), download it with `python -m piper.download_voices --download-dir voices <voice-name>`, and point `tts.voice_path` at it.
 
 You can keep several agents side by side: `python -m app.main --config config/another-agent.yaml`.
