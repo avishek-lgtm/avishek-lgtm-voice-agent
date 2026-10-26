@@ -27,6 +27,8 @@ DETAILS = {
     "budget_range": "50 to 60 lakh",
     "timeline": "after Diwali",
 }
+# What the caller said; a phone number is only kept if the caller said its digits.
+CALL = [{"role": "user", "content": "I'm Ravi Kumar, my number is 98300 12345, email Ravi dot K at gmail dot com"}]
 
 
 class ScriptedLLM:
@@ -84,7 +86,7 @@ def test_books_only_after_read_back_and_yes(tmp_path):
         ]
     )
     intake = Intake(CFG, store, llm, now=lambda: NOW)
-    history = [{"role": "user", "content": "hi"}]
+    history = CALL
 
     run(intake.update(history))
     assert intake.fields["email"] == "ravi.k@gmail.com"
@@ -115,9 +117,9 @@ def test_correction_during_confirmation_does_not_book(tmp_path):
         ]
     )
     intake = Intake(CFG, store, llm, now=lambda: NOW)
-    run(intake.update([]))
+    run(intake.update(CALL))
     intake.context()  # read-back step
-    run(intake.update([]))
+    run(intake.update(CALL + [{"role": "user", "content": "Yes, but my number is 98300 99999"}]))
     assert not intake.booked_ref
     assert intake.fields["phone"] == "9830099999"
 
@@ -126,14 +128,14 @@ def test_slot_taken_by_another_caller(tmp_path):
     store = LeadStore(tmp_path / "leads.db")
     a = Intake(CFG, store, ScriptedLLM([{**DETAILS, "slot_id": "S1"}, {**DETAILS, "slot_id": "S1", "confirmed": True}]), now=lambda: NOW)
     b = Intake(CFG, store, ScriptedLLM([{**DETAILS, "name": "Asha", "slot_id": "S1"}]), now=lambda: NOW)
-    run(a.update([]))
-    run(b.update([]))
+    run(a.update(CALL))
+    run(b.update(CALL))
     a.context()
     b.context()
-    run(a.update([]))  # A books S1
+    run(a.update(CALL))  # A books S1
     assert a.booked_ref
     b.llm.extractions = [{"confirmed": True}]
-    run(b.update([]))  # B's slot is gone now
+    run(b.update(CALL))  # B's slot is gone now
     assert not b.booked_ref and b.slot is None
     assert "just taken" in b.context()
 
@@ -196,3 +198,108 @@ def test_call_over_websocket_creates_lead(tmp_path):
         csv = client.get("/api/leads.csv")
         assert csv.headers["content-type"].startswith("text/csv")
         assert "New Town" in csv.text
+
+
+def test_phone_kept_only_if_caller_said_it(tmp_path):
+    store = LeadStore(tmp_path / "leads.db")
+    # Whisper dropped digits; the model then made up a full-length number.
+    heard = [{"role": "user", "content": "My phone number is 98,312,345."}]
+    intake = Intake(CFG, store, ScriptedLLM([{**DETAILS, "phone": "+93123345690"}]), now=lambda: NOW)
+    run(intake.update(heard))
+    assert intake.fields["phone"] == ""
+    assert "phone number" in intake.context()  # asks again instead of saving a wrong number
+
+    # Too short to be a full number, even though the caller said it.
+    intake.llm.extractions = [{**DETAILS, "phone": "98312345"}]
+    run(intake.update(heard))
+    assert intake.fields["phone"] == ""
+
+    # The caller says it again: taken from their words even though the model is stuck on the old guess.
+    for words in ("Sure, slowly, 98300, 12345.", "nine eight three zero zero, one two three four five",
+                  "my budget is 50 lakh and my number is 98300 1 2 3 4 5"):
+        intake.fields["phone"] = ""
+        intake.llm.extractions = [{**DETAILS, "phone": "+98312345"}]
+        run(intake.update(heard + [{"role": "user", "content": words}]))
+        assert intake.fields["phone"] == "9830012345", words
+
+    # A country code the model added to digits the caller said is fine.
+    intake.fields["phone"] = ""
+    intake.llm.extractions = [{**DETAILS, "phone": "+91 98300 12345"}]
+    run(intake.update([{"role": "user", "content": "it's 98300 12345"}, {"role": "user", "content": "yes"}]))
+    assert intake.fields["phone"] == "+919830012345"
+
+
+def test_false_booking_claims_are_never_spoken(tmp_path):
+    intake = Intake(CFG, LeadStore(tmp_path / "leads.db"), ScriptedLLM([]), now=lambda: NOW)
+    fine = [
+        "Would you like me to go ahead and book it?",
+        "Shall I book Tuesday at 10 am for you?",
+        "I can offer Tuesday at 10 am or Wednesday at 11 am.",
+    ]
+    for sentence in fine:
+        assert intake.screen(sentence) == sentence
+
+    # Not booked: the first claim becomes a correction, later ones are dropped.
+    first = intake.screen("I'll go ahead and book a free site visit for you on Tuesday at 10 am.")
+    assert "not booked yet" in first
+    assert intake.screen("Your visit is booked for Tuesday.") is None
+
+    for claim in ("I've booked your site visit.", "I've confirmed the visit for Tuesday, October 27th, at 10 am."):
+        run(intake.update([]))  # next caller turn resets the correction
+        assert "not booked yet" in intake.screen(claim)
+    run(intake.update([]))
+    assert intake.screen("I've confirmed your phone number.") == "I've confirmed your phone number."
+
+    # Once the code has booked it, saying so is allowed, but promising an email never is.
+    intake.booked_ref = "L0001"
+    run(intake.update([]))
+    assert intake.screen("Your visit is booked for Tuesday at 10 am.") == "Your visit is booked for Tuesday at 10 am."
+    assert intake.screen("We'll send you a reference number, L0001.") == (
+        "Your reference number is L 0 0 0 1. A colleague will call you to confirm the details."
+    )
+
+
+def test_untrue_booking_is_not_spoken_over_websocket(tmp_path):
+    class Claims(ScriptedLLM):
+        async def stream(self, messages):
+            yield "Thank you, Ravi. I'll go ahead and book a free site visit for you on Tuesday at 10 am. "
+            yield "I'll send you a confirmation email."
+
+    class STT:
+        def transcribe(self, pcm):
+            return ""
+
+    class TTS:
+        def synthesize(self, text):
+            return b"RIFF"
+
+    store = LeadStore(tmp_path / "leads.db")
+    app = create_app(cfg=CFG, stt=STT(), llm=Claims([{**DETAILS, "slot_id": "S1"}]), tts=TTS(), store=store)
+    spoken = []
+    with TestClient(app).websocket_connect("/ws") as ws:
+        while json.loads(ws.receive().get("text") or "{}").get("type") != "done":
+            pass
+        ws.send_json({"type": "text", "text": "Yes, please book it"})
+        while True:
+            msg = ws.receive()
+            data = json.loads(msg.get("text") or "{}")
+            if data.get("type") == "assistant":
+                spoken.append(data["text"])
+            if data.get("type") == "done":
+                break
+    assert spoken[0] == "Thank you, Ravi."
+    assert "not booked yet" in spoken[1]
+    assert len(spoken) == 2  # the email promise was dropped
+    assert not store.list_leads() or store.list_leads()[0]["appointment_start"] is None
+
+
+def test_email_kept_only_if_caller_said_it(tmp_path):
+    intake = Intake(CFG, LeadStore(tmp_path / "leads.db"), ScriptedLLM([]), now=lambda: NOW)
+    # Whisper garbled it and the model filled in an example address instead.
+    intake.llm.extractions = [{"email": "ravi.k@gmail.com"}]
+    run(intake.update([{"role": "user", "content": "My email is RaviTechKumar at GM Packham."}]))
+    assert intake.fields["email"] == ""
+
+    intake.llm.extractions = [{"email": "ravi.kumar@gmail.com"}]
+    run(intake.update([{"role": "user", "content": "It's ravi dot kumar at gmail dot com"}]))
+    assert intake.fields["email"] == "ravi.kumar@gmail.com"

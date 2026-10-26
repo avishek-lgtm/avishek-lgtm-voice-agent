@@ -27,6 +27,28 @@ log = logging.getLogger(__name__)
 
 NOT_PROVIDED = "not provided"
 TRANSCRIPT_WINDOW = 10  # messages the extractor sees
+MIN_PHONE_DIGITS = 10
+
+# Spoken sentences the agent may only say once the code has booked the visit.
+BOOKING_CLAIM = re.compile(
+    r"\b(?:is|are|has been|have been|now|all)\s+(?:booked|scheduled|reserved)\b"
+    r"|\b(?:i|we)(?:'ve| have)\s+(?:booked|scheduled|reserved)\b"
+    r"|\b(?:i|we)(?:'ve| have)\s+confirmed\s+(?:the|your|a)\s+(?:free\s+)?(?:site\s+)?(?:visit|appointment|booking|slot)\b"
+    r"|\b(?:i|we)(?:'ll| will)\s+(?:go ahead and\s+)?(?:book|schedule|reserve)\b"
+    r"|\blet me\s+(?:go ahead and\s+)?(?:book|schedule|reserve)\b"
+    r"|\b(?:visit|appointment|booking)\s+(?:is|has been)\s+confirmed\b",
+    re.IGNORECASE,
+)
+# The agent can't send anything, so it must never promise to.
+MESSAGE_PROMISE = re.compile(
+    r"\b(?:i|we)(?:'ll| will)\s+(?:send|email|text|message)\b"
+    r"|\bconfirmation\s+(?:email|e-mail|sms|text|message)\b",
+    re.IGNORECASE,
+)
+DIGIT_WORDS = {
+    "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4",
+    "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9",
+}
 
 EXTRACT_SCHEMA = {
     "type": "object",
@@ -52,6 +74,7 @@ class Intake:
         self.awaiting_confirmation = False
         self.booked_ref: str | None = None
         self.slot_lost = False
+        self._corrected = False  # already corrected a false promise this turn
 
     # ---------- state ----------
 
@@ -74,6 +97,7 @@ class Intake:
 
     async def update(self, history: list[dict]) -> None:
         """Read the latest caller turn and advance the booking."""
+        self._corrected = False
         if self.booked_ref:
             return
         self.slot_lost = False
@@ -84,7 +108,7 @@ class Intake:
             log.exception("Detail extraction failed")
             data = {}
 
-        changed = self._merge(data)
+        changed = self._merge(data, history)
         if (
             data.get("confirmed") is True
             and self.awaiting_confirmation
@@ -95,10 +119,15 @@ class Intake:
             self._book(history)
         self.save(history)
 
-    def _merge(self, data: dict) -> bool:
+    def _merge(self, data: dict, history: list[dict]) -> bool:
         changed = False
         for f in LEAD_FIELDS + ["notes"]:
             value = _clean(f, data.get(f))
+            if f == "phone":
+                value = self._phone(value, history)
+            elif f == "email" and _real(value) and not _caller_said_email(value, history):
+                log.info("Ignoring email %s: the caller did not say it", value)
+                value = ""
             if value and not _same(value, self.fields.get(f, "")):
                 # Don't let "not provided" overwrite a real answer.
                 if value == NOT_PROVIDED and self.fields.get(f):
@@ -114,6 +143,23 @@ class Intake:
         if changed:
             self.awaiting_confirmation = False
         return changed
+
+    def _phone(self, extracted: str, history: list[dict]) -> str:
+        """Phone number from the caller's own words, never from the model's guess.
+
+        A full number in the caller's latest message wins (it is also how a caller
+        corrects a misheard one). Otherwise the model's value is kept only if the
+        caller said those digits: small models invent numbers and fill in digits
+        Whisper missed.
+        """
+        latest = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+        said = _phone_in(latest)
+        if said:
+            return said
+        if _real(extracted) and not _caller_said(extracted, history):
+            log.info("Ignoring phone %s: the caller did not say those digits", extracted)
+            return ""
+        return extracted
 
     def _book(self, history: list[dict]) -> None:
         b = self.cfg.booking
@@ -146,7 +192,7 @@ Return JSON with these keys. Use only what the CALLER said. Use "" if not mentio
 Use "{NOT_PROVIDED}" if the caller refused or does not know.
 - name: caller's full name
 - phone: digits only, keep a leading + (convert spoken numbers to digits)
-- email: written form, e.g. "ravi dot k at gmail dot com" -> "ravi.k@gmail.com"
+- email: written form, e.g. "name dot surname at gmail dot com" -> "name.surname@gmail.com"
 - project_type: short label; prefer one of: {project_types}
 - site_location: area, city or address of the construction site
 - budget_range: as the caller said it, e.g. "20 to 30 lakh"
@@ -192,6 +238,27 @@ Appointment slots offered:
         parts.append("Never tell the caller the appointment is booked unless this section says it is booked.")
         return "\n".join(parts)
 
+    def screen(self, sentence: str) -> str | None:
+        """Check one spoken sentence before it is said.
+
+        Returns the sentence unchanged, a truthful replacement, or None to drop it.
+        The model is told never to claim a booking or promise a message, but small
+        models still do, so the code has the last word.
+        """
+        claim = not self.booked_ref and BOOKING_CLAIM.search(sentence) and not sentence.rstrip().endswith("?")
+        if not claim and not MESSAGE_PROMISE.search(sentence):
+            return sentence
+        log.warning("Blocked an untrue promise: %s", sentence)
+        if self._corrected:
+            return None
+        self._corrected = True
+        if not claim:
+            ref = f"Your reference number is {_spell(self.booked_ref)}. " if self.booked_ref else ""
+            return ref + "A colleague will call you to confirm the details."
+        if self.slot and not self.missing_required():
+            return "Just to be clear, the visit is not booked yet. Could you please confirm the details, so I can book it?"
+        return "Just to be clear, the visit is not booked yet."
+
     def _next_step(self) -> str:
         b = self.cfg.booking
         self.awaiting_confirmation = False
@@ -217,8 +284,8 @@ Appointment slots offered:
             return prefix + f"Offer two or three of the open slots for a {b.appointment_type} and ask which suits them."
         self.awaiting_confirmation = True
         return (
-            "Briefly read back the caller's name, phone number, project type, site location and the chosen slot, "
-            "then ask them to confirm so you can book it."
+            "Briefly read back the caller's name, phone number (digit by digit), project type, site location "
+            "and the chosen slot, then ask them to confirm so you can book it."
         )
 
     def snapshot(self) -> dict:
@@ -245,11 +312,47 @@ def _clean(field: str, value) -> str:
         return NOT_PROVIDED
     if field == "phone":
         digits = re.sub(r"[^\d+]", "", value)
-        return digits if len(re.sub(r"\D", "", digits)) >= 7 else ""
+        return digits if len(re.sub(r"\D", "", digits)) >= MIN_PHONE_DIGITS else ""
     if field == "email":
         value = value.replace(" ", "").lower()
         return value if re.fullmatch(r"[^@]+@[^@]+\.[a-z]{2,}", value) else ""
     return value
+
+
+def _spoken_digits(text: str) -> str:
+    """'nine eight three, 0 0' -> '9 8 3, 0 0': digit words become digits."""
+    return re.sub(r"[a-z]+", lambda w: DIGIT_WORDS.get(w.group(), w.group()), text.lower())
+
+
+def _phone_in(text: str) -> str:
+    """A full phone number spoken in one run of digits, e.g. '98300, 12345' or '+91 98300 12345'."""
+    for run in re.findall(r"\+?\d[\d\s,.\-]*\d", _spoken_digits(text)):
+        digits = re.sub(r"[^\d+]", "", run)
+        if MIN_PHONE_DIGITS <= len(digits.lstrip("+")) <= 13:
+            return digits
+    return ""
+
+
+def _caller_said(phone: str, history: list[dict]) -> bool:
+    """True if the phone number's digits appear in one of the caller's own messages."""
+    digits = re.sub(r"\D", "", phone)
+    wanted = {digits, digits[-MIN_PHONE_DIGITS:]}  # allow a country code the model added
+    for m in history:
+        if m["role"] == "user" and any(w in re.sub(r"\D", "", _spoken_digits(m["content"])) for w in wanted):
+            return True
+    return False
+
+
+def _caller_said_email(email: str, history: list[dict]) -> bool:
+    """True if a caller message spells out this email ("ravi dot k at gmail dot com")."""
+    wanted = re.sub(r"[^a-z0-9]", "", email.lower())
+    for m in history:
+        if m["role"] != "user":
+            continue
+        spoken = re.sub(r"\b(?:dot|at)\b", "", m["content"].lower())
+        if wanted in re.sub(r"[^a-z0-9]", "", spoken):
+            return True
+    return False
 
 
 def _same(a: str, b: str) -> bool:

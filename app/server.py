@@ -84,7 +84,7 @@ class Conversation:
         spoken: list[str] = []
         try:
             async for sentence in sentences(self.llm.stream(self.messages())):
-                sentence = clean_for_speech(sentence)
+                sentence = self.intake.screen(clean_for_speech(sentence) or "")
                 if not sentence:
                     continue
                 if not spoken:
